@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>霓虹跳跃 · Neon Jump</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<style>
+  html,body{margin:0;height:100%;background:#05060d;overflow:hidden;font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif;color:#e8eaff;-webkit-user-select:none;user-select:none}
+  canvas{display:block;width:100%;height:100%;touch-action:none}
+  #hud{position:fixed;left:14px;top:12px;font-size:13px;letter-spacing:1px;text-shadow:0 0 8px #4ad7ff;pointer-events:none}
+  #hud b{font-size:22px;font-weight:600;display:block;margin-top:2px}
+  #hud .diff{display:inline-block;margin-left:8px;padding:1px 6px;border:1px solid #ff3860;color:#ff3860;border-radius:3px;font-size:10px;letter-spacing:2px;text-shadow:0 0 6px #ff3860}
+  #best{position:fixed;right:14px;top:12px;font-size:12px;text-align:right;color:#9aa3c7;text-shadow:0 0 6px #6bf}
+  #mute{position:fixed;right:14px;bottom:14px;width:36px;height:36px;border-radius:50%;border:1px solid #5cf0ff;background:rgba(10,20,40,.6);color:#5cf0ff;cursor:pointer;font-size:16px;line-height:34px;text-align:center;box-shadow:0 0 14px rgba(92,240,255,.25)}
+  #overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,rgba(20,10,40,.55),rgba(0,0,0,.85));backdrop-filter:blur(6px);z-index:5}
+  #overlay h1{margin:0 0 6px;font-size:42px;letter-spacing:6px;background:linear-gradient(90deg,#ff5cf0,#5cf0ff);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 0 24px rgba(255,92,240,.35)}
+  #overlay h1.over{background:linear-gradient(90deg,#ff3860,#ffd23f);-webkit-background-clip:text;background-clip:text}
+  #overlay p{margin:6px 0;color:#aab;font-size:13px}
+  #overlay .btn{margin-top:18px;padding:10px 28px;border:1px solid #5cf0ff;border-radius:30px;color:#5cf0ff;cursor:pointer;letter-spacing:3px;font-size:14px;background:rgba(92,240,255,.06);box-shadow:0 0 20px rgba(92,240,255,.25) inset,0 0 18px rgba(92,240,255,.2)}
+  #overlay .btn:hover{background:rgba(92,240,255,.15)}
+  .hint{font-size:11px;color:#667;margin-top:14px;letter-spacing:1px}
+  .legend{display:flex;gap:14px;margin-top:14px;font-size:11px;color:#aab}
+  .legend i{display:inline-block;width:14px;height:6px;border-radius:3px;vertical-align:middle;margin-right:4px;box-shadow:0 0 8px currentColor}
+  .c1{color:#5cf0ff}.c2{color:#ff5cf0}.c3{color:#ffd23f}.c4{color:#a78bfa}
+  .tag{display:inline-block;padding:2px 8px;border:1px solid #ff3860;border-radius:10px;color:#ff3860;font-size:10px;letter-spacing:3px;text-shadow:0 0 6px #ff3860;margin-bottom:8px}
+</style>
+</head>
+<body>
+<canvas id="g"></canvas>
+<div id="hud">高度<b id="score">0</b><span class="diff">HARDCORE</span></div>
+<div id="best">最高 <span id="bestv">0</span></div>
+<button id="mute" title="静音">♪</button>
+
+<div id="overlay">
+  <div class="tag">HARDCORE MODE</div>
+  <h1 id="title">NEON JUMP</h1>
+  <p id="line1">← → 或 A / D 移动 · 屏幕边缘可穿越</p>
+  <p id="line2">空格 暂停 · R 重开 · M 静音</p>
+  <div class="legend">
+    <span class="c1"><i style="background:#5cf0ff"></i>普通</span>
+    <span class="c2"><i style="background:#ff5cf0"></i>弹簧</span>
+    <span class="c3"><i style="background:#ffd23f"></i>一次性</span>
+    <span class="c4"><i style="background:#a78bfa"></i>移动</span>
+  </div>
+  <div class="btn" id="startBtn">开始</div>
+  <div class="hint">移动端:左右触屏滑动控制</div>
+</div>
+
+<script>
+(() => {
+  const cvs = document.getElementById('g');
+  const ctx = cvs.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('bestv');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+  const titleEl = document.getElementById('title');
+  const line1El = document.getElementById('line1');
+  const line2El = document.getElementById('line2');
+  const muteBtn = document.getElementById('mute');
+
+  let W = 0, H = 0, dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const fit = () => {
+    W = window.innerWidth; H = window.innerHeight;
+    cvs.width = W * dpr; cvs.height = H * dpr;
+    cvs.style.width = W + 'px'; cvs.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // resize 后把玩家夹回屏幕,避免越界后立刻判负
+    if (player) {
+      player.x = Math.max(player.r, Math.min(W - player.r, player.x));
+      if (player.y > H - 40) player.y = H - 40;
+    }
+  };
+
+  // ---------------- 音效 (WebAudio,纯合成,无外部依赖) ----------------
+  const Sfx = {
+    ctx: null,
+    muted: localStorage.getItem('neonjump_muted') === '1',
+    ensure() {
+      if (!this.ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) this.ctx = new AC();
+      }
+      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    },
+    tone({freq=440, freq2=null, type='square', dur=0.1, gain=0.18, attack=0.005, release=null}) {
+      if (this.muted || !this.ctx) return;
+      const t = this.ctx.currentTime;
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, t);
+      if (freq2 !== null) o.frequency.exponentialRampToValueAtTime(Math.max(1, freq2), t + dur);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(gain, t + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur + (release || 0));
+      o.connect(g).connect(this.ctx.destination);
+      o.start(t); o.stop(t + dur + (release || 0) + 0.02);
+    },
+    noise({dur=0.18, gain=0.25, freq=900}) {
+      if (this.muted || !this.ctx) return;
+      const t = this.ctx.currentTime;
+      const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const flt = this.ctx.createBiquadFilter();
+      flt.type = 'lowpass'; flt.frequency.value = freq;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(gain, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.connect(flt).connect(g).connect(this.ctx.destination);
+      src.start(t);
+    },
+    jump() { this.tone({freq:520, freq2:880, type:'square', dur:0.08, gain:0.12}); },
+    spring(){ this.tone({freq:600, freq2:1500, type:'triangle', dur:0.18, gain:0.18});
+              this.tone({freq:300, freq2:900, type:'square', dur:0.14, gain:0.06}); },
+    crack() { this.noise({dur:0.18, gain:0.22, freq:1200});
+              this.tone({freq:200, freq2:90, type:'sawtooth', dur:0.16, gain:0.08}); },
+    death() {
+      const seq = [880, 600, 380, 220];
+      seq.forEach((f, i) => setTimeout(() => this.tone({freq:f, freq2:f*0.6, type:'sawtooth', dur:0.18, gain:0.18}), i * 130));
+    },
+    setMuted(m) {
+      this.muted = m;
+      localStorage.setItem('neonjump_muted', m ? '1' : '0');
+      muteBtn.textContent = m ? '♬' : '♪';
+      muteBtn.style.opacity = m ? 0.4 : 1;
+    },
+  };
+  Sfx.setMuted(Sfx.muted);
+  muteBtn.addEventListener('click', e => { e.stopPropagation(); Sfx.setMuted(!Sfx.muted); });
+
+  const KEYS = { left:false, right:false };
+  window.addEventListener('keydown', e => {
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') KEYS.left = true;
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') KEYS.right = true;
+    if (e.code === 'Space') { e.preventDefault(); togglePause(); }
+    if (e.code === 'KeyR') reset(true);
+    if (e.code === 'KeyM') Sfx.setMuted(!Sfx.muted);
+  });
+  window.addEventListener('keyup', e => {
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') KEYS.left = false;
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') KEYS.right = false;
+  });
+
+  let touchDir = 0;
+  const tStart = e => {
+    Sfx.ensure();
+    const x = (e.touches ? e.touches[0].clientX : e.clientX);
+    touchDir = x < W / 2 ? -1 : 1;
+  };
+  const tEnd = () => { touchDir = 0; };
+  cvs.addEventListener('touchstart', e => { e.preventDefault(); tStart(e); }, { passive:false });
+  cvs.addEventListener('touchend', tEnd);
+  cvs.addEventListener('touchcancel', tEnd);
+
+  // ---------------- HARDCORE 难度参数 ----------------
+  const G = {
+    gravity: 0.52,        // 比普通(0.42)高,下落更狠
+    jump: -12.4,          // 跳得稍低
+    springJump: -22,
+    moveAcc: 0.78,
+    maxVx: 6.5,
+    friction: 0.86,
+    platW: 70,            // 平台更窄(80→70)
+    platH: 13,
+    platGapMin: 78,       // 平台更稀(60→78)
+    platGapRand: 95,
+    // 平台类型分布(累积概率,从上到下判断)
+    pSpring: 0.05,        // 救命弹簧很少
+    pFragile: 0.36,       // 一次性平台多(原 0.18)
+    pMover: 0.62,         // 移动平台多(原 0.30)
+    moverSpeedMin: 1.6,
+    moverSpeedRand: 1.8,
+  };
+
+  let player = null, platforms, particles, stars, score, best;
+  let paused = false, gameOver = false, started = false;
+  best = Number(localStorage.getItem('neonjump_best_hc') || 0);
+  bestEl.textContent = best;
+
+  // 初始化一次,fit 才能拿到 W H
+  fit();
+  window.addEventListener('resize', fit);
+
+  function reset(autoStart) {
+    player = {
+      x: W / 2, y: H - 120, vx: 0, vy: 0, r: 14, facing: 1,
+      trail: []
+    };
+    platforms = [];
+    particles = [];
+    stars = [];
+    for (let i = 0; i < 90; i++) {
+      stars.push({ x: Math.random() * W, y: Math.random() * H, z: Math.random() * 0.8 + 0.2 });
+    }
+    // 起始平台:确保在玩家正下方,普通类型
+    platforms.push({ x: W/2 - G.platW/2, y: H - 60, type:'normal', alive:true, vx:0, shake:0 });
+    let y = H - 140;
+    while (y > -800) {
+      platforms.push(makePlatform(y));
+      y -= G.platGapMin + Math.random() * G.platGapRand;
+    }
+    score = 0; gameOver = false; paused = false;
+    scoreEl.textContent = '0';
+    if (autoStart) { started = true; overlay.style.display = 'none'; Sfx.ensure(); }
+  }
+
+  function makePlatform(y) {
+    const r = Math.random();
+    let type;
+    if (r < G.pSpring) type = 'spring';
+    else if (r < G.pFragile) type = 'fragile';
+    else if (r < G.pMover) type = 'mover';
+    else type = 'normal';
+    return {
+      x: Math.random() * (W - G.platW),
+      y, type, alive:true,
+      vx: type === 'mover' ? (Math.random() < .5 ? -1 : 1) * (G.moverSpeedMin + Math.random() * G.moverSpeedRand) : 0,
+      shake: 0,
+    };
+  }
+
+  function spawnTrail() {
+    player.trail.push({ x: player.x, y: player.y, life: 1 });
+    if (player.trail.length > 14) player.trail.shift();
+  }
+
+  function emit(x, y, color, n, opts={}) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = (opts.speedMin || 1) + Math.random() * (opts.speedMax || 4);
+      particles.push({
+        x, y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s + (opts.upBias || 0),
+        life: 1, decay: 0.02 + Math.random() * 0.03,
+        color, size: 2 + Math.random() * 3
+      });
+    }
+  }
+
+  // swept 碰撞:从 prevBottom 到 currentBottom,扫一段直线,避免高速穿透
+  function checkPlatformHit() {
+    if (player.vy <= 0) return;
+    const prevPy = (player.y - player.vy) + player.r; // 上一帧脚底
+    const py = player.y + player.r;
+    const px = player.x;
+    let hit = null, hitTopDist = Infinity;
+    for (const p of platforms) {
+      if (!p.alive) continue;
+      if (p.y < prevPy - 2 || p.y > py + 2) continue;        // 区间外
+      if (px < p.x - 4 || px > p.x + G.platW + 4) continue;  // 横向不重叠
+      const dist = p.y - prevPy; // 越小越先碰到
+      if (dist >= 0 && dist < hitTopDist) {
+        hit = p; hitTopDist = dist;
+      }
+    }
+    if (!hit) return;
+    // 把玩家吸附到平台顶
+    player.y = hit.y - player.r;
+    if (hit.type === 'spring') {
+      player.vy = G.springJump;
+      Sfx.spring();
+      emit(hit.x + G.platW/2, hit.y, '#ff5cf0', 22, { speedMax:6, upBias:-2 });
+    } else if (hit.type === 'fragile') {
+      player.vy = G.jump;
+      hit.alive = false;
+      Sfx.crack();
+      emit(hit.x + G.platW/2, hit.y, '#ffd23f', 26, { speedMax:5 });
+    } else {
+      player.vy = G.jump;
+      hit.shake = 1;
+      Sfx.jump();
+      emit(hit.x + G.platW/2, hit.y, hit.type === 'mover' ? '#a78bfa' : '#5cf0ff', 8, { speedMax:3 });
+    }
+  }
+
+  function update(dt) {
+    if (paused || gameOver || !started) return;
+    // 输入
+    let ax = 0;
+    if (KEYS.left) ax -= G.moveAcc;
+    if (KEYS.right) ax += G.moveAcc;
+    if (touchDir) ax += touchDir * G.moveAcc;
+    player.vx += ax;
+    if (ax === 0) player.vx *= G.friction;
+    player.vx = Math.max(-G.maxVx, Math.min(G.maxVx, player.vx));
+    if (Math.abs(player.vx) > 0.3) player.facing = player.vx > 0 ? 1 : -1;
+
+    // 重力
+    player.vy += G.gravity;
+    player.x += player.vx;
+    player.y += player.vy;
+
+    // 屏幕穿越
+    if (player.x < -player.r) player.x = W + player.r;
+    else if (player.x > W + player.r) player.x = -player.r;
+
+    spawnTrail();
+
+    // 平台移动 + 抖动衰减
+    for (const p of platforms) {
+      if (p.type === 'mover' && p.alive) {
+        p.x += p.vx;
+        if (p.x < 0) { p.x = 0; p.vx *= -1; }
+        if (p.x + G.platW > W) { p.x = W - G.platW; p.vx *= -1; }
+      }
+      if (p.shake > 0) p.shake -= dt * 0.04;
+    }
+    // 单次 swept 碰撞(只命中最近的一个,杜绝多平台同时触发)
+    checkPlatformHit();
+
+    // 卷轴
+    const mid = H * 0.42;
+    if (player.y < mid) {
+      const dy = mid - player.y;
+      player.y = mid;
+      score += dy * 0.1;
+      for (const p of platforms) p.y += dy;
+      for (const pa of particles) pa.y += dy;
+      for (const t of player.trail) t.y += dy;
+      for (const s of stars) {
+        s.y += dy * s.z * 0.4;
+        if (s.y > H) { s.y = 0; s.x = Math.random() * W; }
+      }
+    }
+
+    // 顶部补充平台
+    let topMost = H;
+    for (const p of platforms) topMost = Math.min(topMost, p.y);
+    while (topMost > -200) {
+      topMost -= G.platGapMin + Math.random() * G.platGapRand;
+      platforms.push(makePlatform(topMost));
+    }
+
+    // 清理:死掉的或离屏的平台一并删除
+    platforms = platforms.filter(p => p.alive && p.y < H + 60);
+    for (const pa of particles) {
+      pa.x += pa.vx; pa.y += pa.vy;
+      pa.vy += 0.12;
+      pa.life -= pa.decay;
+    }
+    particles = particles.filter(p => p.life > 0);
+    for (const t of player.trail) t.life -= 0.07;
+    player.trail = player.trail.filter(t => t.life > 0);
+
+    // 失败
+    if (player.y - player.r > H) {
+      gameOver = true;
+      Sfx.death();
+      const finalScore = Math.floor(score);
+      if (finalScore > best) {
+        best = finalScore;
+        localStorage.setItem('neonjump_best_hc', best);
+        bestEl.textContent = best;
+      }
+      showOverlay('over', finalScore);
+    }
+
+    scoreEl.textContent = Math.floor(score);
+  }
+
+  function draw() {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#0a0518');
+    g.addColorStop(1, '#03040a');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    for (const s of stars) {
+      ctx.globalAlpha = 0.4 + s.z * 0.6;
+      ctx.fillStyle = '#cdf';
+      ctx.fillRect(s.x, s.y, 2 * s.z, 2 * s.z);
+    }
+    ctx.globalAlpha = 1;
+
+    for (const p of particles) {
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.color;
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+
+    for (const p of platforms) {
+      if (!p.alive) continue;
+      const colors = {
+        normal: '#5cf0ff',
+        spring: '#ff5cf0',
+        fragile: '#ffd23f',
+        mover: '#a78bfa',
+      };
+      const c = colors[p.type];
+      const sx = p.shake > 0 ? (Math.random() - 0.5) * 4 * p.shake : 0;
+      ctx.shadowColor = c; ctx.shadowBlur = 18;
+      ctx.fillStyle = c;
+      roundRect(ctx, p.x + sx, p.y, G.platW, G.platH, 6);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(255,255,255,.35)';
+      roundRect(ctx, p.x + sx + 4, p.y + 2, G.platW - 8, 3, 2);
+      ctx.fill();
+      if (p.type === 'spring') {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        const cx = p.x + G.platW/2, cy = p.y - 3;
+        ctx.moveTo(cx - 6, cy); ctx.lineTo(cx, cy - 6); ctx.lineTo(cx + 6, cy);
+        ctx.stroke();
+      }
+    }
+    ctx.shadowBlur = 0;
+
+    for (const t of player.trail) {
+      ctx.globalAlpha = t.life * 0.5;
+      ctx.fillStyle = '#5cf0ff';
+      ctx.shadowColor = '#5cf0ff'; ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, player.r * t.life * 0.9, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+
+    drawPlayer();
+  }
+
+  function drawPlayer() {
+    const { x, y, r, facing } = player;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(facing, 1);
+    const grd = ctx.createRadialGradient(0, 0, 2, 0, 0, r * 2.5);
+    grd.addColorStop(0, 'rgba(255,255,255,1)');
+    grd.addColorStop(0.4, 'rgba(120,240,255,.9)');
+    grd.addColorStop(1, 'rgba(120,240,255,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(0, 0, r * 2.4, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowColor = '#5cf0ff'; ctx.shadowBlur = 16;
+    ctx.fillStyle = '#e8feff';
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#0a0518';
+    ctx.beginPath(); ctx.arc(r*0.3, -r*0.1, 2.4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#0a0518'; ctx.lineWidth = 2; ctx.lineCap='round';
+    ctx.beginPath(); ctx.arc(r*0.15, r*0.25, 4, 0, Math.PI); ctx.stroke();
+    ctx.restore();
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function togglePause() {
+    if (gameOver || !started) return;
+    paused = !paused;
+    if (paused) showOverlay('pause');
+    else overlay.style.display = 'none';
+  }
+
+  function showOverlay(kind, finalScore) {
+    titleEl.classList.toggle('over', kind === 'over');
+    if (kind === 'over') {
+      titleEl.textContent = 'GAME OVER';
+      line1El.textContent = `本次高度 ${finalScore} · 最高 ${best}`;
+      line2El.textContent = '点击下方按钮 或 按 R 重开';
+      startBtn.textContent = '再来一次';
+    } else if (kind === 'pause') {
+      titleEl.textContent = '已暂停';
+      line1El.textContent = '空格 继续';
+      line2El.textContent = '';
+      startBtn.textContent = '继续';
+    } else {
+      titleEl.textContent = 'NEON JUMP';
+      line1El.textContent = '← → 或 A / D 移动 · 屏幕边缘可穿越';
+      line2El.textContent = '空格 暂停 · R 重开 · M 静音';
+      startBtn.textContent = '开始';
+    }
+    overlay.style.display = 'flex';
+  }
+
+  startBtn.addEventListener('click', () => {
+    Sfx.ensure();
+    if (gameOver || !started) reset(true);
+    else { paused = false; overlay.style.display = 'none'; }
+  });
+
+  // 主循环:固定 dt,避免 tab 切回时单帧跳变
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(33, now - last);
+    last = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+  reset(false);
+  showOverlay('start');
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
