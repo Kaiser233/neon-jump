@@ -157,23 +157,26 @@
   cvs.addEventListener('touchcancel', tEnd);
 
   // ---------------- HARDCORE 难度参数 ----------------
+  // 物理可达性约束:跳跃高度 = jump² / (2*gravity)
+  //   = 12.4² / (2*0.52) ≈ 148px
+  // 平台间距上限必须 < 148 - 横向位移裕量 ≈ 130px,否则物理上跳不上去
   const G = {
-    gravity: 0.52,        // 比普通(0.42)高,下落更狠
-    jump: -12.4,          // 跳得稍低
+    gravity: 0.52,
+    jump: -12.4,
     springJump: -22,
     moveAcc: 0.78,
     maxVx: 6.5,
     friction: 0.86,
-    platW: 70,            // 平台更窄(80→70)
+    platW: 70,
     platH: 13,
-    platGapMin: 78,       // 平台更稀(60→78)
-    platGapRand: 95,
-    // 平台类型分布(累积概率,从上到下判断)
-    pSpring: 0.05,        // 救命弹簧很少
-    pFragile: 0.36,       // 一次性平台多(原 0.18)
-    pMover: 0.62,         // 移动平台多(原 0.30)
+    platGapMin: 55,       // 间距下限
+    platGapRand: 70,      // 实际间距 55~125 (跳跃高度 148 内)
+    // 平台类型分布(累积概率)
+    pSpring: 0.07,
+    pFragile: 0.38,
+    pMover: 0.66,         // normal 占 34%
     moverSpeedMin: 1.6,
-    moverSpeedRand: 1.8,
+    moverSpeedRand: 1.9,
   };
 
   let player = null, platforms, particles, stars, score, best;
@@ -196,17 +199,32 @@
     for (let i = 0; i < 90; i++) {
       stars.push({ x: Math.random() * W, y: Math.random() * H, z: Math.random() * 0.8 + 0.2 });
     }
-    // 起始平台:确保在玩家正下方,普通类型
-    platforms.push({ x: W/2 - G.platW/2, y: H - 60, type:'normal', alive:true, vx:0, shake:0 });
-    let y = H - 140;
+    // 起始平台:玩家正下方,普通类型
+    const startX = W/2 - G.platW/2;
+    platforms.push({ x: startX, y: H - 60, type:'normal', alive:true, vx:0, shake:0 });
+    lastPlatX = startX;
+    // 开局缓冲:前 4 个平台强制普通,横向偏移更小
+    let y = H - 60;
+    for (let i = 0; i < 4; i++) {
+      y -= 70 + Math.random() * 30;
+      let cx = lastPlatX + (Math.random() - 0.5) * 2 * 140;
+      cx = Math.max(0, Math.min(W - G.platW, cx));
+      lastPlatX = cx;
+      platforms.push({ x: cx, y, type:'normal', alive:true, vx:0, shake:0 });
+    }
     while (y > -800) {
-      platforms.push(makePlatform(y));
       y -= G.platGapMin + Math.random() * G.platGapRand;
+      platforms.push(makePlatform(y));
     }
     score = 0; gameOver = false; paused = false;
     scoreEl.textContent = '0';
     if (autoStart) { started = true; overlay.style.display = 'none'; Sfx.ensure(); }
   }
+
+  // 上次生成平台的 X(用于约束横向偏移,保证相邻平台跳跃可达)
+  let lastPlatX = W / 2 - G.platW / 2;
+  // 跳跃滞空时玩家能横移的最大距离(考虑屏幕穿越,实际取 ±200 比较稳)
+  const MAX_X_DELTA = 200;
 
   function makePlatform(y) {
     const r = Math.random();
@@ -215,9 +233,12 @@
     else if (r < G.pFragile) type = 'fragile';
     else if (r < G.pMover) type = 'mover';
     else type = 'normal';
+    // 在 lastPlatX 附近 ±MAX_X_DELTA 内随机,然后 clamp 到屏幕
+    let x = lastPlatX + (Math.random() - 0.5) * 2 * MAX_X_DELTA;
+    x = Math.max(0, Math.min(W - G.platW, x));
+    lastPlatX = x;
     return {
-      x: Math.random() * (W - G.platW),
-      y, type, alive:true,
+      x, y, type, alive:true,
       vx: type === 'mover' ? (Math.random() < .5 ? -1 : 1) * (G.moverSpeedMin + Math.random() * G.moverSpeedRand) : 0,
       shake: 0,
     };
